@@ -1,0 +1,120 @@
+#include "LiquidCrystal.h"
+
+// Motor A connections
+int enA = 2; // Replace with the actual pin numbers you are using
+int in1 = A1;
+int in2 = A2;
+
+// Motor B connections
+int enB = 3; // Replace with the actual pin numbers you are using
+int in3 = A3;
+int in4 = A4;
+int TimeElapsed = 1;
+
+LiquidCrystal lcd(8, 9, 4, 5, 6, 7); // Change these pins to your LCD's pins
+
+unsigned long startTime;
+unsigned long currentTime;
+bool stopCar = true;
+
+void setup() {
+  // Set all the motor control pins to outputs
+  pinMode(enA, OUTPUT);
+  pinMode(enB, OUTPUT);
+  pinMode(in1, OUTPUT);
+  pinMode(in2, OUTPUT);
+  pinMode(in3, OUTPUT);
+  pinMode(in4, OUTPUT);
+  pinMode(12, INPUT_PULLUP); // Assuming the "Reset" button is connected to digital pin 12
+
+  // Initialize the LCD
+  lcd.begin(16, 2);
+
+  // Turn off motors - Initial state
+  digitalWrite(in1, LOW);
+  digitalWrite(in2, LOW);
+  digitalWrite(in3, LOW);
+  digitalWrite(in4, LOW);
+
+  // Display a message on the LCD
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Motors Off");
+  lcd.setCursor(0,1);
+  lcd.print("Prs UP to start");
+  delay(2000); // Display the message for 2 seconds
+}
+
+void loop() {
+  int upButtonState = digitalRead(A0); // Read the state of the "Up" button (change 10 to the actual button pin)
+  int resetButtonState = digitalRead(A0); // Read the state of the "Reset" button (change 12 to the actual button pin)
+
+  if (resetButtonState == LOW) {
+    // Button is pressed, stop the car and reset
+
+    // Turn off motors
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, LOW);
+    digitalWrite(in3, LOW);
+    digitalWrite(in4, LOW);
+
+    // Clear the LCD and set the cursor to the first row, first column
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Motors Off");
+
+    // Reset the stopCar flag
+    stopCar = true;
+  }
+
+  if (stopCar && upButtonState == LOW) {
+    // Button is pressed, move the car for 10 seconds
+
+    // Turn on both motors in the same direction
+    digitalWrite(in1, HIGH);
+    digitalWrite(in2, LOW);
+    digitalWrite(in3, HIGH);
+    digitalWrite(in4, LOW);
+
+    // Record the start time
+    startTime = millis();
+    
+    // Clear the LCD and set the cursor to the first row, first column
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Moving Forward");
+    
+    stopCar = false; // Prevent starting the car again without another reset
+
+    while (millis() - startTime < 10000) {
+      // Calculate the elapsed time
+      currentTime = millis() - startTime;
+
+      // Calculate the count (1 to 10) based on elapsed time
+      TimeElapsed = map(currentTime, 0, 10000, 1, 11); // Updated to reach 10
+
+      // Set the cursor to the second row, first column
+      lcd.setCursor(0, 1);
+
+      // Display the "Time Elapsed" text
+      lcd.print("Time Elapsed:");
+      lcd.print(TimeElapsed);
+      lcd.print("s");
+
+      // Delay to update the LCD display
+      delay(1000);
+    }
+
+    // Turn off motors
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, LOW);
+    digitalWrite(in3, LOW);
+    digitalWrite(in4, LOW);
+
+    // Clear the LCD and set the cursor to the first row, first column
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Motors Off");
+    delay(500); // Display the message for 0.5 seconds
+  }
+}
