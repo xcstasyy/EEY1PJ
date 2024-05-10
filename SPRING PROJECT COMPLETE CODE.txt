@@ -1,0 +1,276 @@
+import cv2
+import numpy as np
+import RPi.GPIO as GPIO
+import math
+
+# GPIO pin setup
+in1, in2, in3, in4 = 26, 19, 13, 6
+en1, en2 = 21, 20
+
+# Initialize GPIO
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+GPIO.setup([en1, en2, in1, in2, in3, in4], GPIO.OUT)
+
+# PWM setup for motor speed control
+p1 = GPIO.PWM(en1, 100)
+p2 = GPIO.PWM(en2, 100)
+p1.start(50)
+p2.start(50)
+
+# Initialize camera
+cap = cv2.VideoCapture(0)
+cap.set(3, 320)
+cap.set(4, 240)
+
+# Constants
+TARGET_SPEED = 20
+error = 0
+last_error = 0
+KP = 0.2
+KI = 0
+KD = 0.7
+
+P = 0
+I = 0
+D = 0
+
+# H, S, and V values for yellow color
+h_yellow = 30  # Adjust this value
+s_yellow = 100  # Adjust this value
+v_yellow = 100  # Adjust this value
+
+# H, S, and V values for blue color
+h_blue = 120  # Adjust this value
+s_blue = 100  # Adjust this value
+v_blue = 100  # Adjust this value
+
+threshold_value = 100  # Default threshold value
+
+# Callback function for the trackbar, to update the threshold value
+def on_trackbar(val):
+    global threshold_value
+    threshold_value = val
+
+def detect_shape(cnt):
+    shape = "unknown"
+    peri = cv2.arcLength(cnt, True)
+    approx = cv2.approxPolyDP(cnt, 0.03 * peri, True)
+    
+    if len(approx) == 3:
+        shape = "triangle"
+    elif len(approx) == 4:
+        (x, y, w, h) = cv2.boundingRect(approx)
+        ar = w / float(h)
+        shape = "square" if 0.95 <= ar <= 1.05 else "rectangle"
+    elif len(approx) == 5:
+        shape = "pentagon"
+    elif len(approx) == 6:
+        shape = "hexagon"
+    elif len(approx) == 7:
+        # Find the centroid of the contour
+        M = cv2.moments(cnt)
+        cX = int(M["m10"] / M["m00"])
+        cY = int(M["m01"] / M["m00"])
+
+        # Find the point on the contour farthest from the centroid (tip of the arrow)
+        max_distance = 0
+        tip_index = 0
+        for i in range(len(approx)):
+            dist = np.linalg.norm(approx[i][0] - (cX, cY))
+            if dist > max_distance:
+                max_distance = dist
+                tip_index = i
+
+        # Calculate the angle between the centroid and the tip of the arrow with respect to a reference axis
+        ref_angle = 90  # Angle of the reference axis (horizontal line)
+        tip_angle = math.atan2(cY - approx[tip_index][0][1], approx[tip_index][0][0] - cX) * 180 / math.pi
+        arrow_angle = tip_angle - ref_angle
+        arrow_angle %= 360  # Ensure the angle is within [0, 360) range
+
+        # Determine the direction based on the arrow angle
+        if 45 <= arrow_angle < 135:
+            shape = "arrow (left)"
+        elif 135 <= arrow_angle < 225:
+            shape = "arrow (down)"
+        elif 225 <= arrow_angle < 315:
+            shape = "arrow (right)"
+        else:
+            shape = "arrow (up)"
+    
+    elif len(approx) > 6:
+        circularity = (4 * math.pi * cv2.contourArea(cnt)) / (peri * peri)
+        shape = "full circle" if circularity > 0.8 else "partial circle"
+    return shape
+
+def move_forward(left_speed, right_speed):
+    p1.ChangeDutyCycle(left_speed)
+    p2.ChangeDutyCycle(right_speed)
+    GPIO.output([in1, in2, in3, in4], [GPIO.HIGH, GPIO.LOW, GPIO.HIGH, GPIO.LOW])
+
+def turn_left(left_speed, right_speed):
+    p1.ChangeDutyCycle(left_speed)
+    p2.ChangeDutyCycle(right_speed)
+    GPIO.output([in1, in2, in3, in4], [GPIO.LOW, GPIO.HIGH, GPIO.HIGH, GPIO.LOW])
+
+def turn_right(left_speed, right_speed):
+    p1.ChangeDutyCycle(left_speed)
+    p2.ChangeDutyCycle(right_speed)
+    GPIO.output([in1, in2, in3, in4], [GPIO.HIGH, GPIO.LOW, GPIO.LOW, GPIO.HIGH])
+    
+def move_backward(left_speed, right_speed):
+    p1.ChangeDutyCycle(left_speed)
+    p2.ChangeDutyCycle(right_speed)
+    GPIO.output([in1, in2, in3, in4], [GPIO.LOW, GPIO.HIGH, GPIO.LOW, GPIO.HIGH])
+    
+def pid_calc(dx):
+    global error, last_error, left_speed, right_speed, P, I, D, pid_sum, KP, KI, KD
+    error = dx
+    P = error
+    I += error
+    D = error - last_error
+    last_error = error
+    pid_sum = (KP * P) + (KI * I) + (KD * D)
+    left_speed = TARGET_SPEED - pid_sum
+    right_speed = TARGET_SPEED + pid_sum
+    left_speed = max(min(left_speed, 50), 0)
+    right_speed = max(min(right_speed, 50), 0)
+
+def follow_line(frame):
+    hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)  # Convert frame to HSV color space
+
+    # Define lower and upper bounds for yellow color in HSV
+    lower_yellow = np.array([160, 100, 100])
+    upper_yellow = np.array([180, 255, 255])
+
+    # Define lower and upper bounds for blue color in HSV
+    lower_blue = np.array([40, 100, 40])
+    upper_blue = np.array([80, 255, 255])
+
+    # Threshold the HSV frame to get only yellow colors
+    yellow_mask = cv2.inRange(hsv_frame, lower_yellow, upper_yellow)
+
+    # Threshold the HSV frame to get only blue colors
+    blue_mask = cv2.inRange(hsv_frame, lower_blue, upper_blue)
+
+    # Find contours in the thresholded images
+    yellow_contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    blue_contours, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Initialize variables to store green and yellow line contours
+    yellow_contour = None
+    blue_contour = None
+    
+    for contour in yellow_contours:
+        area = cv2.contourArea(contour)
+        if area > 100:
+            yellow_contour = contour
+    
+    for contour in blue_contours:
+        area = cv2.contourArea(contour)
+        if area > 100:
+            blue_contour = contour
+    
+    # Prioritize following yellow line
+    if yellow_contour is not None:
+        follow_contour(frame, yellow_contour)
+    elif blue_contour is not None:
+        follow_contour(frame, blue_contour)
+    else:
+        follow_black_line(frame)
+
+def follow_contour(frame, contour):
+    M = cv2.moments(contour)
+    cx, cy = int(M['m10'] / M['m00']), int(M['m01'] / M['m00'])
+    
+    # Calculate relative x-coordinate from the center
+    relative_cx = cx - frame.shape[1] // 2
+
+    pid_calc(relative_cx)
+    
+    if relative_cx < -80:
+        turn_left(85, 85)  # Reduce left motor speed based on error
+    elif relative_cx > 80:
+        turn_right(85, 85)  # Reduce right motor speed based on error
+    else:
+        move_forward(left_speed, right_speed)
+
+    cv2.circle(frame, (cx, cy), 5, (255, 255, 255), -1)
+    cv2.drawContours(frame, [contour], -1, (0, 255, 0), 1)
+    
+def follow_black_line(frame):
+    # This function follows the black line based on the center of the contour method
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, thresholded = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)
+    thresholded = cv2.bitwise_not(thresholded)  # Invert the thresholded image
+
+    # Find contours
+    contours, _ = cv2.findContours(thresholded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if contours:
+        c = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(c)
+
+        if area > 100:
+            M = cv2.moments(c)
+            cx, cy = int(M['m10'] / M['m00']), int(M['m01'] / M['m00'])
+
+            # Calculate relative x-coordinate from the center
+            relative_cx = cx - frame.shape[1] // 2
+
+            pid_calc(relative_cx)
+
+            if relative_cx < -80:
+                turn_left(85, 85)  # Reduce left motor speed based on error
+            elif relative_cx > 80:
+                turn_right(85, 85)  # Reduce right motor speed based on error
+            else:
+                move_forward(left_speed, right_speed)
+
+            cv2.circle(frame, (cx, cy), 5, (255, 255, 255), -1)
+            cv2.drawContours(frame, [c], -1, (0, 255, 0), 1)
+    else:
+        move_backward(30, 30)
+
+    cv2.namedWindow("Shape Detection")
+    cv2.createTrackbar("Threshold", "Shape Detection", threshold_value, 255, on_trackbar)
+
+while True:
+    ret, frame = cap.read()
+
+    follow_line(frame)
+    
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blurred_frame = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Apply binary thresholding using the trackbar value
+    _, thresh_frame = cv2.threshold(blurred_frame, threshold_value, 255, cv2.THRESH_BINARY)
+    edges = cv2.Canny(thresh_frame, 30, 100)
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    for cnt in contours:
+        if cv2.contourArea(cnt) > 500:  # Filter out very small contours
+            shape = detect_shape(cnt)
+            print("Detected shape", shape)
+            
+            cv2.drawContours(frame, [cnt], -1, (0, 0, 255), 2)
+            M = cv2.moments(cnt)
+            if M["m00"] != 0:
+                cX = int(M["m10"] / M["m00"])
+                cY = int(M["m01"] / M["m00"])
+                cv2.putText(frame, shape, (cX, cY), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+    cv2.imshow("Frame", frame)
+    
+
+    if cv2.waitKey(1) & 0xff == ord('q'):  # 1 is the time in ms
+        GPIO.output([in1, in2, in3, in4], [GPIO.LOW, GPIO.LOW, GPIO.LOW, GPIO.LOW])
+        break
+
+cap.release()
+cv2.destroyAllWindows()
+GPIO.cleanup()
+
+
+
